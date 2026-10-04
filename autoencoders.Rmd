@@ -1,222 +1,245 @@
+---
+title: "H2O Autoencoders for High-Dimensional Representation Learning"
+author: "Anastasios Vlaikidis"
+date: "2022"
+output: html_document
+---
 
-```{r}
+```{r setup, include=FALSE}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidymodels)
 library(h2o)
-
-h2oInstance <- h2o.init(ip ="localhost", max_mem_size = "5g")
-h2oInstance
 ```
 
+## Import and prepare data
+
+The project uses a relative data path so the analysis can be reproduced on another machine. See `data/README.md` for the expected file layout.
+
 ```{r}
-# train , test splits
-df_split <- initial_split(
-  
-  df, 
-  prop = .75,
-  strata = Target
-  
-)
+set.seed(1821)
+
+data_path <- file.path("data", "wave_functions.csv")
+
+df <- fread(
+  data_path,
+  header = FALSE,
+  nrows = 800000,
+  skip = 1700000
+) %>%
+  rename(Target = V113) %>%
+  select(1:113) %>%
+  as_tibble()
+
+df <- df %>%
+  mutate(
+    Target = factor(
+      Target,
+      levels = c(1, 0),
+      labels = c("Anomaly", "Smooth")
+    )
+  ) %>%
+  slice_sample(prop = 0.003)
+```
+
+## Train/test split and preprocessing
+
+Preprocessing is learned from the training set only and applied unchanged to the held-out test set.
+
+```{r}
+df_split <- initial_split(df, prop = 0.75, strata = Target)
 
 df_train <- training(df_split)
 df_test <- testing(df_split)
 
-df_train <- df_train[sample(1:nrow(df_train)),]
-df_test <- df_test[sample(1:nrow(df_test)),]
-
-
-# basic preprocess
-basic_rec <-
-  recipe(Target~., data = df_train) %>%
+preprocess_rec <- recipe(Target ~ ., data = df_train) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors())
 
+preprocess_prep <- prep(preprocess_rec, training = df_train)
 
-# apply the recipe to the train and test data
-df_train <-
-  basic_rec %>%
-  prep() %>%
-  bake(new_data = NULL)
-
-
-df_test <-
-  basic_rec %>%
-  prep() %>%
-  bake(new_data = df_test)
-
-# make them as h2o frames
-trF <- as.h2o(df_train, "trF")
-tsF <- as.h2o(df_test, "tsF")
+df_train <- bake(preprocess_prep, new_data = NULL)
+df_test <- bake(preprocess_prep, new_data = df_test)
 ```
 
+## Start H2O
 
 ```{r}
-# Train an autoencoder
-ae1 <- 
-  h2o.deeplearning(
-    
-  x = 1:112,
-  training_frame = trF,
+h2o_instance <- h2o.init(max_mem_size = "5g")
+h2o_instance
+
+train_h2o <- as.h2o(df_train, destination_frame = "train_h2o")
+test_h2o <- as.h2o(df_test, destination_frame = "test_h2o")
+
+predictor_columns <- setdiff(names(train_h2o), "Target")
+```
+
+## Train a sparse autoencoder
+
+```{r}
+autoencoder <- h2o.deeplearning(
+  x = predictor_columns,
+  training_frame = train_h2o,
   autoencoder = TRUE,
-  standardize = F,
-  shuffle_training_data = F,
+  standardize = FALSE,
+  shuffle_training_data = FALSE,
   seed = 1821,
   hidden = c(200, 200, 200, 200, 50),
-  activation = 'Tanh',
+  activation = "Tanh",
   sparse = TRUE,
-  #epochs = 100,
   sparsity_beta = 0.01
-  
 )
 
-
-# Extract the deep features
-ae1_codings <- h2o.deepfeatures(ae1, trF, layer = 1)
-ae1_codings
+print(autoencoder)
 ```
 
+## Inspect learned deep features
+
 ```{r}
-p <- ae1_codings
-p <- as.data.frame(p)
-names(p)
+train_deep_features <- h2o.deepfeatures(
+  autoencoder,
+  train_h2o,
+  layer = 1
+) %>%
+  as.data.frame()
 
+train_deep_features %>%
+  mutate(Target = df_train$Target) %>%
+  ggplot(aes(x = .data[[names(train_deep_features)[1]]],
+             y = .data[[names(train_deep_features)[2]]],
+             color = Target)) +
+  geom_point(alpha = 0.7) +
+  labs(
+    title = "First two learned deep features",
+    x = "Deep feature 1",
+    y = "Deep feature 2"
+  ) +
+  theme_minimal()
+```
 
+## PCA comparison
 
-p %>%
-  ggplot(aes(x = DF.L1.C1, y = DF.L1.C2, col = df_train[["Target"]] ))+
-  geom_point()+
-  theme_dark()
-
-
-
-
-basic_rec %>%
+```{r}
+pca_data <- recipe(Target ~ ., data = df_train) %>%
   step_pca(all_numeric_predictors(), num_comp = 4) %>%
-  prep() %>%
-  bake(new_data = NULL) %>%
-  ggplot(aes(PC1,PC2, col = Target))+
-  geom_point()+
-  theme_dark()
+  prep(training = df_train) %>%
+  bake(new_data = NULL)
 
-
-# basic_rec %>%
-#   step_umap(all_numeric_predictors(), 
-#             num_comp = 2,
-#             neighbors = 14,
-#             outcome = vars(Target),
-#             min_dist = 0.1,
-#             options =  list(metric = "manhattan")) %>%
-#             prep() %>%
-#             bake(new_data = NULL) %>%
-#             ggplot(aes(UMAP1, UMAP2, col = Target))+
-#             geom_point()+
-#             theme_dark()
+pca_data %>%
+  ggplot(aes(PC1, PC2, color = Target)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "PCA representation") +
+  theme_minimal()
 ```
 
-```{r}
-# Hyperparameter search grid
-hyper_grid <- list(hidden = list(
-  c(50,50,4),
-  c(4),
-  c(50,25),
-  c(112,56,112,4), 
-  c(112, 35, 4),
-  c(112, 50, 4),
-  c(112, 20, 4),
-  c(112, 5, 4),
-  c(150,200,4),
-  c(200,200,200,200, 50),
-  c(200, 200, 200, 200, 200, 50, 25,10)
-))
+## Architecture grid search
 
-# Execute grid search
-ae_grid <- h2o.grid(
-  algorithm = 'deeplearning',
-  x = 1:112,
-  training_frame = trF,
-  grid_id = 'autoencoder_grid',
+```{r}
+architecture_grid <- list(
+  hidden = list(
+    c(50, 50, 4),
+    c(4),
+    c(50, 25),
+    c(112, 56, 112, 4),
+    c(112, 35, 4),
+    c(112, 50, 4),
+    c(112, 20, 4),
+    c(112, 5, 4),
+    c(150, 200, 4),
+    c(200, 200, 200, 200, 50),
+    c(200, 200, 200, 200, 200, 50, 25, 10)
+  )
+)
+
+architecture_search <- h2o.grid(
+  algorithm = "deeplearning",
+  x = predictor_columns,
+  training_frame = train_h2o,
+  grid_id = "autoencoder_architecture_grid",
   autoencoder = TRUE,
-  activation = 'Tanh',
-  hyper_params = hyper_grid,
+  activation = "Tanh",
+  hyper_params = architecture_grid,
   sparse = TRUE,
   ignore_const_cols = FALSE,
   seed = 1821
 )
+
+h2o.getGrid(
+  "autoencoder_architecture_grid",
+  sort_by = "mse",
+  decreasing = FALSE
+)
 ```
 
-```{r}
-h2o.getGrid('autoencoder_grid', sort_by = 'mse', decreasing = F)
-```
+## Sparsity search
 
 ```{r}
-# Hyperparameter search grid
-hyper_grid <- list(sparsity_beta = c(0.01, 0.05, 0.1, 0.2))
+sparsity_grid <- list(
+  sparsity_beta = c(0.01, 0.05, 0.1, 0.2)
+)
 
-# Execute grid search
-ae_sparsity_grid <- h2o.grid(
-  algorithm = 'deeplearning',
-  x = 1:112,
-  training_frame = trF,
-  grid_id = 'sparsity_grid',
+sparsity_search <- h2o.grid(
+  algorithm = "deeplearning",
+  x = predictor_columns,
+  training_frame = train_h2o,
+  grid_id = "autoencoder_sparsity_grid",
   autoencoder = TRUE,
   hidden = c(200, 200, 200, 200, 50),
-  activation = 'Tanh',
-  hyper_params = hyper_grid,
+  activation = "Tanh",
+  hyper_params = sparsity_grid,
   sparse = TRUE,
   average_activation = -0.1,
   ignore_const_cols = FALSE,
   seed = 1821
 )
 
-# Print grid details
-h2o.getGrid('sparsity_grid', sort_by = 'mse', decreasing = F)
+h2o.getGrid(
+  "autoencoder_sparsity_grid",
+  sort_by = "mse",
+  decreasing = FALSE
+)
 ```
 
+## Reconstruction error
+
 ```{r}
-plot(as.data.frame(h2o.scoreHistory(ae1))$training_mse, type = "l")
+score_history <- as.data.frame(h2o.scoreHistory(autoencoder))
+
+plot(
+  score_history$training_mse,
+  type = "l",
+  xlab = "Scoring step",
+  ylab = "Training MSE",
+  main = "Autoencoder training error"
+)
 ```
 
-```{r}
-print(ae1)
-
-```
+## Export learned representations
 
 ```{r}
-
-df_train_L8 <- h2o.deepfeatures(ae1, trF, layer = 5) %>%
-as.data.frame() %>%
-bind_cols(., Target = df_train$Target)
-
-df_test_L8 <- h2o.deepfeatures(ae1, tsF, layer = 5) %>%
-as.data.frame() %>%
-bind_cols(., Target = df_test$Target)
-
-
-# tt <- 
-#   predict(ae1, trf) %>% # same as h2o.predict
-#   as.data.frame() %>%
-#   bind_cols(., Target = df_train$Target)
-# 
-# colnames(tt) <- gsub("reconstr_","",colnames(tt))
-```
-
-
-```{r}
-# make the new dataframes
-df_train_L8 <- 
-  h2o.predict(ae1, trF) %>%
+train_embedding <- h2o.deepfeatures(
+  autoencoder,
+  train_h2o,
+  layer = 5
+) %>%
   as.data.frame() %>%
-  bind_cols(., Target = df_train$Target)
+  bind_cols(Target = df_train$Target)
 
-colnames(df_train_L8) <- gsub("reconstr_","",colnames(df_train_L8))
-
-df_test_L8 <- 
-  h2o.predict(ae1, tsF) %>%
+test_embedding <- h2o.deepfeatures(
+  autoencoder,
+  test_h2o,
+  layer = 5
+) %>%
   as.data.frame() %>%
-  bind_cols(., Target = df_test$Target)
+  bind_cols(Target = df_test$Target)
 
-colnames(df_test_L8) <- gsub("reconstr_","",colnames(df_test_L8))
-
+head(train_embedding)
+head(test_embedding)
 ```
 
+## Shut down H2O
+
 ```{r}
-h2o.shutdown(prompt = F)
+h2o.shutdown(prompt = FALSE)
 ```
