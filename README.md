@@ -4,12 +4,13 @@ An R project exploring **H2O deep-learning autoencoders** for representation lea
 
 ## Project overview
 
-The workflow is now self-contained: it loads the source data, creates a labelled sample, performs a stratified train/test split, learns preprocessing from the training data only, starts a local H2O instance and trains sparse autoencoders. The learned representation is compared with PCA and explored through architecture and sparsity grid searches.
+The workflow is self-contained: it loads the source data, creates a labelled sample, performs a stratified train/test split, learns preprocessing from the training data only, starts a local H2O instance and trains sparse autoencoders. The learned representation is compared with PCA and explored through architecture and sparsity grid searches.
 
 ## Repository contents
 
-- [`autoencoders.Rmd`](autoencoders.Rmd) — complete reproducible R Markdown workflow.
+- [`h2o_autoencoder_pipeline.Rmd`](h2o_autoencoder_pipeline.Rmd) — complete reproducible R Markdown workflow.
 - [`data/README.md`](data/README.md) — expected raw-data layout.
+- [`.gitignore`](.gitignore) — local R/H2O and raw-data exclusions.
 
 ## Methods and tools
 
@@ -21,21 +22,11 @@ The project uses:
 - `dplyr` for data manipulation,
 - `ggplot2` for visualisation.
 
-The analysis includes:
-
-1. stratified sampling and splitting,
-2. training-only Yeo-Johnson transformation and normalization,
-3. sparse deep-autoencoder training,
-4. extraction of learned hidden-layer features,
-5. PCA comparison,
-6. architecture grid search,
-7. sparsity-penalty search,
-8. reconstruction-error inspection,
-9. export of train/test embeddings.
+The analysis includes stratified sampling and splitting, training-only transformation and normalization, sparse autoencoder training, hidden-layer feature extraction, PCA comparison, architecture and sparsity searches, reconstruction inspection and train/test embeddings.
 
 ## Reproducibility
 
-The original source depended on an already-created `df` object, so it could not run independently. The current version loads the dataset explicitly from a project-relative path and creates every object it needs inside the document.
+The original source depended on an already-created `df` object. The current version loads the dataset explicitly from a project-relative path and creates every object required by the workflow.
 
 ## Data requirements
 
@@ -44,9 +35,9 @@ The large raw dataset is not stored in this repository. Place it at `data/wave_f
 ## Running the analysis
 
 1. Install R and Java.
-2. Install `h2o`, `tidymodels`, `data.table`, `dplyr` and `ggplot2`.
+2. Install the packages used by the workflow.
 3. Place the dataset under `data/`.
-4. Open `autoencoders.Rmd` in RStudio and run or knit the document.
+4. Open `h2o_autoencoder_pipeline.Rmd` in RStudio and run or knit the document.
 
 ## Scope
 
