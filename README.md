@@ -1,17 +1,39 @@
-# h2o.autoencoders-and-R
+# H2O Autoencoders in R
 
-h2o.autoencoders is a machine learning algorithm for unsupervised learning that can be used for dimensionality reduction and anomaly detection. 
-The algorithm learns a compressed representation of the input data by encoding it into a lower dimensional space and then decoding it back to its original dimensions.
-Anomaly detection is then performed by measuring the difference between the input and output.
+An R project exploring **H2O deep-learning autoencoders** for representation learning, dimensionality reduction and anomaly-oriented analysis on high-dimensional data.
 
-R is a popular programming language for data analysis and statistical computing. 
-It has a wide variety of libraries and packages available for machine learning, including h2o, 
-which is a scalable and distributed machine learning platform that allows users to build and deploy machine learning models using R.
+## Project overview
 
-Using h2o.autoencoders in R can be a powerful combination for dimensionality reduction and anomaly detection. 
-R's data manipulation and visualization capabilities can be used to preprocess the data and explore it,
-while h2o's machine learning algorithms can be used to build the models and make predictions.
+The workflow preprocesses a labelled dataset, converts it to H2O frames, trains sparse deep autoencoders, extracts hidden-layer representations and compares learned features with other dimensionality-reduction approaches.
 
-When using h2o.autoencoders in R, it is important to understand the parameters and hyperparameters of the algorithm and how they affect the performance of the model. 
-It is also important to properly preprocess the data before feeding it into the algorithm to ensure the best results. 
-Additionally, it is recommended to use cross-validation or other techniques to tune the hyperparameters and evaluate the model's performance on unseen data.
+## Repository contents
+
+- [`autoencoders.Rmd`](autoencoders.Rmd) — complete R Markdown analysis.
+
+## Methods and tools
+
+The source uses H2O deep learning together with a tidymodels-style preprocessing workflow. It includes:
+
+- stratified train/test splitting,
+- Yeo-Johnson transformation and normalization,
+- sparse autoencoder training,
+- extraction of deep features,
+- reconstruction-based outputs,
+- architecture grid search,
+- sparsity hyperparameter search,
+- comparison with PCA-style representations.
+
+## Requirements
+
+The analysis assumes that the input dataframe (`df`) has already been prepared before the code shown in `autoencoders.Rmd` is run. It also starts a local H2O instance and therefore requires a working Java/H2O installation.
+
+## Reproducing the analysis
+
+1. Install R and the required packages, including `h2o`, `tidymodels`/`recipes`, `dplyr` and `ggplot2` as used by the workflow.
+2. Prepare the input dataframe expected by the R Markdown file.
+3. Start the analysis in an environment where H2O can launch locally.
+4. Run the document sequentially.
+
+## Scope
+
+This repository is an experimental deep-learning project focused on learned representations rather than a packaged production model.
