@@ -1,0 +1,8 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.Renviron
+h2o_logs/
+.DS_Store
+Thumbs.db
