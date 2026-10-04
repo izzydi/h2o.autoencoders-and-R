@@ -9,8 +9,9 @@ An R project exploring **H2O deep-learning autoencoders** for representation lea
 ## Repository contents
 
 - [`h2o_autoencoder_pipeline.Rmd`](h2o_autoencoder_pipeline.Rmd) — audited R Markdown workflow.
-- [`data/README.md`](data/README.md) — expected raw-data layout.
-- [`R-packages.txt`](R-packages.txt) — direct R package dependencies.
+- [`data/README.md`](data/README.md) — expected raw-data layout and provenance note.
+- [`R-packages.txt`](R-packages.txt) — version-pinned direct R dependencies.
+- [`.github/workflows/r-ci.yml`](.github/workflows/r-ci.yml) — R 4.6.1 / Java 17 dependency and syntax CI.
 - [`.gitignore`](.gitignore) — local R/H2O and raw-data exclusions.
 
 ## Validation design
@@ -27,7 +28,11 @@ The workflow includes hidden-layer feature extraction, PCA comparison, architect
 
 ## Reproducibility
 
-The current workflow creates every required object inside the document, checks that the raw dataset exists before reading it, uses project-relative paths, sets fixed seeds and requests H2O's reproducible mode. H2O internal standardization is disabled because predictors have already been normalized by a training-fitted recipe.
+The direct R package versions are pinned in [`R-packages.txt`](R-packages.txt). CI uses R 4.6.1, Java 17 and `pak` to install those exact direct package versions, then extracts and parses the canonical R Markdown source. The pinned H2O R package requires a Java runtime in the supported 8–17 range; Java 17 is used consistently in CI.
+
+The modelling workflow creates every required object inside the document, checks that the raw dataset exists before reading it, uses project-relative paths, sets fixed seeds and requests H2O's reproducible mode. H2O internal standardization is disabled because predictors have already been normalized by a training-fitted recipe.
+
+`R-packages.txt` pins the direct dependencies, but it is not a full `renv.lock`; recursive dependency resolution is handled by `pak`. A lockfile generated from a restored project library can be added later if bit-for-bit package-library restoration is required.
 
 ## Data requirements
 
@@ -35,8 +40,14 @@ The large raw dataset is not stored in this repository. Place it at `data/wave_f
 
 ## Running the analysis
 
-1. Install R and a Java runtime compatible with your H2O release.
-2. Install packages listed in [`R-packages.txt`](R-packages.txt).
+1. Install R 4.6.1 and Java 17.
+2. Install `pak`, then install the pinned direct dependencies:
+
+```r
+install.packages("pak")
+pak::pkg_install(readLines("R-packages.txt"), upgrade = FALSE)
+```
+
 3. Place the dataset under `data/`.
 4. Run or knit `h2o_autoencoder_pipeline.Rmd` from top to bottom.
 
