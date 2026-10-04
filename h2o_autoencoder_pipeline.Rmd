@@ -48,25 +48,34 @@ df <- df %>%
   slice_sample(prop = 0.003)
 ```
 
-## Train/test split and preprocessing
+## Held-out test split
 
-Preprocessing is learned from the training set only and applied unchanged to the held-out test set.
+The external test partition is created first and is not used for preprocessing, architecture selection or sparsity tuning.
 
 ```{r}
 set.seed(1821)
 df_split <- initial_split(df, prop = 0.75, strata = Target)
+df_train_raw <- training(df_split)
+df_test_raw <- testing(df_split)
+```
 
-df_train <- training(df_split)
-df_test <- testing(df_split)
+## Internal representation-selection split
 
-preprocess_rec <- recipe(Target ~ ., data = df_train) %>%
+Architecture and sparsity are selected on a second split made **inside the training partition**. Preprocessing for this search is learned from the representation-training subset only.
+
+```{r}
+set.seed(1821)
+ae_split <- initial_split(df_train_raw, prop = 0.80, strata = Target)
+ae_train_raw <- training(ae_split)
+ae_valid_raw <- testing(ae_split)
+
+selection_recipe <- recipe(Target ~ ., data = ae_train_raw) %>%
   step_YeoJohnson(all_numeric_predictors()) %>%
   step_normalize(all_numeric_predictors())
 
-preprocess_prep <- prep(preprocess_rec, training = df_train)
-
-df_train <- bake(preprocess_prep, new_data = NULL)
-df_test <- bake(preprocess_prep, new_data = df_test)
+selection_prep <- prep(selection_recipe, training = ae_train_raw)
+ae_train <- bake(selection_prep, new_data = NULL)
+ae_valid <- bake(selection_prep, new_data = ae_valid_raw)
 ```
 
 ## Start H2O
@@ -75,74 +84,15 @@ df_test <- bake(preprocess_prep, new_data = df_test)
 h2o_instance <- h2o.init(max_mem_size = "5g")
 h2o_instance
 
-train_h2o <- as.h2o(df_train, destination_frame = "train_h2o")
-test_h2o <- as.h2o(df_test, destination_frame = "test_h2o")
-
-predictor_columns <- setdiff(names(train_h2o), "Target")
-stopifnot(length(predictor_columns) > 1)
+ae_train_h2o <- as.h2o(ae_train, destination_frame = "ae_train")
+ae_valid_h2o <- as.h2o(ae_valid, destination_frame = "ae_valid")
+selection_predictors <- setdiff(names(ae_train_h2o), "Target")
+stopifnot(length(selection_predictors) > 1)
 ```
 
-## Train a sparse autoencoder
+## Validation-based architecture and sparsity search
 
-The recipe has already normalized the predictors, so H2O's internal standardization is disabled.
-
-```{r}
-autoencoder <- h2o.deeplearning(
-  x = predictor_columns,
-  training_frame = train_h2o,
-  autoencoder = TRUE,
-  standardize = FALSE,
-  shuffle_training_data = FALSE,
-  seed = 1821,
-  hidden = c(200, 200, 200, 200, 50),
-  activation = "Tanh",
-  sparse = TRUE,
-  sparsity_beta = 0.01
-)
-
-print(autoencoder)
-```
-
-## Inspect learned deep features
-
-```{r}
-train_deep_features <- h2o.deepfeatures(
-  autoencoder,
-  train_h2o,
-  layer = 1
-) %>%
-  as.data.frame()
-
-train_deep_features %>%
-  mutate(Target = df_train$Target) %>%
-  ggplot(aes(x = .data[[names(train_deep_features)[1]]],
-             y = .data[[names(train_deep_features)[2]]],
-             color = Target)) +
-  geom_point(alpha = 0.7) +
-  labs(
-    title = "First two learned deep features",
-    x = "Deep feature 1",
-    y = "Deep feature 2"
-  ) +
-  theme_minimal()
-```
-
-## PCA comparison
-
-```{r}
-pca_data <- recipe(Target ~ ., data = df_train) %>%
-  step_pca(all_numeric_predictors(), num_comp = 4) %>%
-  prep(training = df_train) %>%
-  bake(new_data = NULL)
-
-pca_data %>%
-  ggplot(aes(PC1, PC2, color = Target)) +
-  geom_point(alpha = 0.7) +
-  labs(title = "PCA representation") +
-  theme_minimal()
-```
-
-## Architecture grid search
+The H2O grid receives an explicit validation frame. With `nfolds = 0`, `h2o.getGrid(..., sort_by = "mse")` ranks models using validation metrics rather than training metrics. The best architecture and sparsity coefficient are then carried into the final model.
 
 ```{r}
 architecture_grid <- list(
@@ -158,56 +108,135 @@ architecture_grid <- list(
     c(150, 200, 4),
     c(200, 200, 200, 200, 50),
     c(200, 200, 200, 200, 200, 50, 25, 10)
-  )
-)
-
-architecture_search <- h2o.grid(
-  algorithm = "deeplearning",
-  x = predictor_columns,
-  training_frame = train_h2o,
-  grid_id = "autoencoder_architecture_grid",
-  autoencoder = TRUE,
-  activation = "Tanh",
-  hyper_params = architecture_grid,
-  sparse = TRUE,
-  ignore_const_cols = FALSE,
-  seed = 1821
-)
-
-h2o.getGrid(
-  "autoencoder_architecture_grid",
-  sort_by = "mse",
-  decreasing = FALSE
-)
-```
-
-## Sparsity search
-
-```{r}
-sparsity_grid <- list(
+  ),
   sparsity_beta = c(0.01, 0.05, 0.1, 0.2)
 )
 
-sparsity_search <- h2o.grid(
+set.seed(1821)
+search_result <- h2o.grid(
   algorithm = "deeplearning",
-  x = predictor_columns,
-  training_frame = train_h2o,
-  grid_id = "autoencoder_sparsity_grid",
+  x = selection_predictors,
+  training_frame = ae_train_h2o,
+  validation_frame = ae_valid_h2o,
+  grid_id = "autoencoder_selection_grid",
   autoencoder = TRUE,
-  hidden = c(200, 200, 200, 200, 50),
   activation = "Tanh",
-  hyper_params = sparsity_grid,
+  hyper_params = architecture_grid,
+  search_criteria = list(
+    strategy = "RandomDiscrete",
+    max_models = 20,
+    seed = 1821
+  ),
   sparse = TRUE,
   average_activation = -0.1,
+  standardize = FALSE,
   ignore_const_cols = FALSE,
+  reproducible = TRUE,
   seed = 1821
 )
 
-h2o.getGrid(
-  "autoencoder_sparsity_grid",
+selection_grid <- h2o.getGrid(
+  "autoencoder_selection_grid",
   sort_by = "mse",
   decreasing = FALSE
 )
+selection_grid
+
+best_search_model <- h2o.getModel(selection_grid@model_ids[[1]])
+selected_hidden <- best_search_model@parameters$hidden
+selected_sparsity_beta <- best_search_model@parameters$sparsity_beta
+
+selected_hidden
+selected_sparsity_beta
+```
+
+## Refit preprocessing on the complete training partition
+
+Once hyperparameters have been selected, preprocessing is re-estimated using all rows in the overall training partition. The held-out test set is transformed with the fitted object and remains untouched by fitting.
+
+```{r}
+final_recipe <- recipe(Target ~ ., data = df_train_raw) %>%
+  step_YeoJohnson(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+final_prep <- prep(final_recipe, training = df_train_raw)
+df_train <- bake(final_prep, new_data = NULL)
+df_test <- bake(final_prep, new_data = df_test_raw)
+
+train_h2o <- as.h2o(df_train, destination_frame = "train_h2o")
+test_h2o <- as.h2o(df_test, destination_frame = "test_h2o")
+
+predictor_columns <- setdiff(names(train_h2o), "Target")
+stopifnot(length(predictor_columns) > 1)
+```
+
+## Train the final sparse autoencoder
+
+The selected architecture is retrained on the complete training partition. The recipe has already normalized predictors, so H2O's internal standardization is disabled.
+
+```{r}
+autoencoder <- h2o.deeplearning(
+  x = predictor_columns,
+  training_frame = train_h2o,
+  autoencoder = TRUE,
+  standardize = FALSE,
+  shuffle_training_data = FALSE,
+  reproducible = TRUE,
+  seed = 1821,
+  hidden = selected_hidden,
+  activation = "Tanh",
+  sparse = TRUE,
+  average_activation = -0.1,
+  sparsity_beta = selected_sparsity_beta
+)
+
+print(autoencoder)
+```
+
+## Inspect learned deep features
+
+The last hidden layer is used as the learned representation. Its dimension therefore follows the architecture selected on the internal validation subset.
+
+```{r}
+embedding_layer <- length(selected_hidden)
+
+train_deep_features <- h2o.deepfeatures(
+  autoencoder,
+  train_h2o,
+  layer = embedding_layer
+) %>%
+  as.data.frame()
+
+if (ncol(train_deep_features) >= 2) {
+  train_deep_features %>%
+    mutate(Target = df_train$Target) %>%
+    ggplot(aes(x = .data[[names(train_deep_features)[1]]],
+               y = .data[[names(train_deep_features)[2]]],
+               color = Target)) +
+    geom_point(alpha = 0.7) +
+    labs(
+      title = "First two learned deep features",
+      x = "Deep feature 1",
+      y = "Deep feature 2"
+    ) +
+    theme_minimal()
+}
+```
+
+## PCA comparison
+
+```{r}
+pca_data <- recipe(Target ~ ., data = df_train_raw) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_pca(all_numeric_predictors(), num_comp = 4) %>%
+  prep(training = df_train_raw) %>%
+  bake(new_data = NULL)
+
+pca_data %>%
+  ggplot(aes(PC1, PC2, color = Target)) +
+  geom_point(alpha = 0.7) +
+  labs(title = "PCA representation") +
+  theme_minimal()
 ```
 
 ## Reconstruction error
@@ -220,19 +249,17 @@ plot(
   type = "l",
   xlab = "Scoring step",
   ylab = "Training MSE",
-  main = "Autoencoder training error"
+  main = "Final autoencoder training error"
 )
 ```
 
 ## Export learned representations
 
-The fifth hidden layer is the final 50-unit bottleneck in the chosen architecture.
-
 ```{r}
 train_embedding <- h2o.deepfeatures(
   autoencoder,
   train_h2o,
-  layer = 5
+  layer = embedding_layer
 ) %>%
   as.data.frame() %>%
   bind_cols(Target = df_train$Target)
@@ -240,7 +267,7 @@ train_embedding <- h2o.deepfeatures(
 test_embedding <- h2o.deepfeatures(
   autoencoder,
   test_h2o,
-  layer = 5
+  layer = embedding_layer
 ) %>%
   as.data.frame() %>%
   bind_cols(Target = df_test$Target)
