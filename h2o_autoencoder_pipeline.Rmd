@@ -1,7 +1,5 @@
 ---
 title: "H2O Autoencoders for High-Dimensional Representation Learning"
-author: "Anastasios Vlaikidis"
-date: "2022"
 output: html_document
 ---
 
@@ -21,6 +19,9 @@ The project uses a relative data path so the analysis can be reproduced on anoth
 set.seed(1821)
 
 data_path <- file.path("data", "wave_functions.csv")
+if (!file.exists(data_path)) {
+  stop("Missing data/wave_functions.csv. See data/README.md for the expected layout.")
+}
 
 df <- fread(
   data_path,
@@ -28,9 +29,13 @@ df <- fread(
   nrows = 800000,
   skip = 1700000
 ) %>%
-  rename(Target = V113) %>%
   select(1:113) %>%
+  rename(Target = V113) %>%
   as_tibble()
+
+if (ncol(df) != 113) {
+  stop("Expected 112 predictors plus one target column.")
+}
 
 df <- df %>%
   mutate(
@@ -48,6 +53,7 @@ df <- df %>%
 Preprocessing is learned from the training set only and applied unchanged to the held-out test set.
 
 ```{r}
+set.seed(1821)
 df_split <- initial_split(df, prop = 0.75, strata = Target)
 
 df_train <- training(df_split)
@@ -73,9 +79,12 @@ train_h2o <- as.h2o(df_train, destination_frame = "train_h2o")
 test_h2o <- as.h2o(df_test, destination_frame = "test_h2o")
 
 predictor_columns <- setdiff(names(train_h2o), "Target")
+stopifnot(length(predictor_columns) > 1)
 ```
 
 ## Train a sparse autoencoder
+
+The recipe has already normalized the predictors, so H2O's internal standardization is disabled.
 
 ```{r}
 autoencoder <- h2o.deeplearning(
@@ -217,6 +226,8 @@ plot(
 
 ## Export learned representations
 
+The fifth hidden layer is the final 50-unit bottleneck in the chosen architecture.
+
 ```{r}
 train_embedding <- h2o.deepfeatures(
   autoencoder,
@@ -242,4 +253,10 @@ head(test_embedding)
 
 ```{r}
 h2o.shutdown(prompt = FALSE)
+```
+
+## Session information
+
+```{r}
+sessionInfo()
 ```
